@@ -12,7 +12,7 @@ This is currently viewed as an internal class. The interface may change.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 14 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 16 $ =~ /(\d+)/o);
 
 use DBI 1.57 qw(dbi_time);
 use DBI::Profile;
@@ -27,7 +27,7 @@ BEGIN {
         require Hash::Util;
         Hash::Util->import('lock_keys');
     };
-    die @$ if $@ && $@ =~ /^Can't locate Hash\/Util\.pm/;
+    die @$ if $@ && $@ !~ /^Can't locate Hash\/Util/;
     *lock_keys = sub { } if not defined &lock_keys;
 }
 
