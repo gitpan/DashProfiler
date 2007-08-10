@@ -2,7 +2,7 @@ package DashProfiler::Import;
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 16 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 25 $ =~ /(\d+)/o);
 
 use base qw(Exporter);
 
@@ -10,49 +10,92 @@ use Carp;
 
 use DashProfiler;
 
+our $ExportLevel = 0;
+
 =head1 NAME
 
 DashProfiler::Import - Import curried DashProfiler sampler function at compile-time
 
 =head1 SYNOPSIS
 
-  use DashProfiler::Import foo_profiler => [ "bar" ];
+  use DashProfiler::Import foo_profiler => [ "my context 1" ];
+
+  use DashProfiler::Import foo_profiler => [ "my context 1" ],
+                           bar_profiler => [ "my context 1", context2edit => sub { ... } ];
+
+  use DashProfiler::Import :optional baz_profiler => [ "my context 1" ];
 
   ...
   my $sample = foo_profiler("baz");
 
 =head1 DESCRIPTION
 
+Firstly, read L<DashProfiler::UserGuide> for a general introduction.
+
 The example above imports a function called foo_profiler() that is a sample
-factory for the stash called "foo", pre-configured ("curried") to use the value
-"bar" for context1.
+factory for the DashProfiler called "foo", pre-configured ("curried") to
+use the value "bar" for context1.
+
+=head2 Using *_profiler_enabled()
 
 It also imports a function called foo_profiler_enabled() that's a constant,
-returning false if the stash was disabled at the time. This is useful when
-profiling very time-senstive code and you want the profiling to have zero
-overhead when not in use. For example:
+returning false if the named DashProfiler was disabled at the time.
 
-    $sample = foo_profiler("baz") if foo_profiler_enabled();
+This is useful when profiling very time-senstive code and you want the
+profiling to have I<zero> overhead when not in use. For example:
+
+    my $sample = foo_profiler("baz") if foo_profiler_enabled();
 
 Because the C<*_profiler_enabled> function is a constant, the perl compiler
-will completely remove the code if the corresponding stash is disabled.
+will completely remove the code if the corresponding DashProfiler is disabled.
+
+If there is no DashProfiler called "foo" then you'll get a compile-time error
+unless the C<:optional> directive has been given first.
+
+Generally this style of code in perl is considered bad practice and error prone:
+
+    my $var = ... if ...;
+
+because the behaviour when the condition is false on one execution having been
+true on previous execution is not well defined (on purpose, because it's
+surprisingly hard to explain what it does, and anyway, it may change).
+
+For the DashProfiler::Import module, however, that style of code is just fine.
+That's because the condition is a compile-time constant.
 
 =cut
 
 sub import {
     my $class = shift;
-    my $pkg = caller;
+    my $pkg = caller($ExportLevel);
+
+    my $optional = 0;
 
     while (@_) {
         local $_ = shift;
+
+        if (m/^:\w+/) {
+            if ($_ eq ':optional') {
+                $optional = 1;
+            }
+            else {
+                croak "Unknown DashProfiler::Import directive '$_'";
+            }
+            next;
+        }
+
         m/^((\w+)_profiler)$/
             or croak "$class name '$_' must end with _profiler";
         my ($var_name, $profile_name) = ($1, $2);
-
-        my $profile = DashProfiler->get_profile($profile_name)
-            or croak "No profile called '$profile_name' has been defined";
-
         my $args = shift;
+
+        my $profile = DashProfiler->get_profile($profile_name);
+        if (!$profile) {
+            croak "No profile called '$profile_name' has been defined"
+                unless $optional;
+            next;
+        }
+
         croak "$var_name => ... requires an array ref containing at least one element"
             unless ref $args eq 'ARRAY' and @$args >= 1;
         my $profiler = $profile->prepare(@$args);
