@@ -3,7 +3,7 @@ package DashProfiler;
 use strict;
 use warnings;
 
-our $VERSION = "1.05";
+our $VERSION = "1.06"; # $Revision: 29 $
 
 =head1 NAME
 
@@ -25,6 +25,8 @@ Via DashProfiler::Import cost per call = 50,000/second, 0.000020s on modern box
 message that "it's fast" is)
 
 =head1 USE IN APACHE
+
+XXX needs more docs
 
 =head2 Example Apache mod_perl Configuration
 
@@ -173,7 +175,6 @@ sub dump_all_profiles {
 =head2 reset_all_profiles
 
 Calls C<reset_profile_data> for all profiles.
-Then calls start_sample_period_all_profiles()
 
 Typically called from mod_perl PerlChildInitHandler.
 
@@ -181,7 +182,6 @@ Typically called from mod_perl PerlChildInitHandler.
 
 sub reset_all_profiles {    # eg PerlChildInitHandler
     $_->reset_profile_data for values %profiles;
-    start_sample_period_all_profiles();
 }
 
 

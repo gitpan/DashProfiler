@@ -22,7 +22,7 @@ multiple profiles.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 25 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 28 $ =~ /(\d+)/o);
 
 use DBI 1.57 qw(dbi_time dbi_profile_merge);
 use DBI::Profile;
@@ -580,6 +580,9 @@ sub start_sample_period {
 
 Marks the end of a series of related samples, e.g, within one http request.
 
+If start_sample_period() was not called for this core then end_sample_period()
+just returns undef.
+
 If C<period_exclusive> is enabled then a sample is added with a duration
 caclulated to be the time since start_sample_period() was called to now, minus
 the time accumulated by samples since start_sample_period() was called.
@@ -595,8 +598,8 @@ See also L</start_sample_period>, C<period_summary> and L</propagate_period_coun
 sub end_sample_period {
     my $self = shift;
     if (not $self->{period_start_time}) {
-        carp "end_sample_period() called for $self->{profile_name} without preceeding start_sample_period()";
-        $self->start_sample_period;
+        carp "end_sample_period() ignored for $self->{profile_name} without preceeding start_sample_period()" if DEBUG();
+        return undef;
     }
     if (my $profiler = $self->{exclusive_sampler} and
         my $dbi_profile = $self->get_dbi_profile
@@ -635,6 +638,10 @@ In effect the prepare() method creates a 'factory'.
 
 The sampler objects created by the returned code reference are pre-set to use
 $context1, and optionally $context2, as their context values.
+
+If the appropriate value for C<context2> won't be available until the end of
+the sample you can set $context2 to a code reference. The reference will be
+executed at the end of the sample. See L<DashProfiler::Sample>.
 
 XXX needs more info about %meta - see the code for now, it's not very complex.
 
