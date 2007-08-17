@@ -3,7 +3,7 @@ package DashProfiler;
 use strict;
 use warnings;
 
-our $VERSION = "1.06"; # $Revision: 29 $
+our $VERSION = "1.07"; # $Revision: 32 $
 
 =head1 NAME
 
