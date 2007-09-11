@@ -22,7 +22,7 @@ multiple profiles.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 28 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 36 $ =~ /(\d+)/o);
 
 use DBI 1.57 qw(dbi_time dbi_profile_merge);
 use DBI::Profile;
@@ -196,7 +196,10 @@ sub new {
         granularity => 0,
         period_exclusive => undef,
         period_summary => undef,
+        period_strict_start  => 0x01,
+        period_strict_end    => 0x00,
         profile_as_text_args => undef,
+        extra_info => undef, # for caller to hook in their own data
     };
     croak "Invalid options: ".join(', ', grep { !$opt_defaults->{$_} } keys %$opt_params)
         if keys %{ { %$opt_defaults, %$opt_params } } > keys %$opt_defaults;
@@ -419,8 +422,11 @@ in all the attached profiles are visited.
 sub visit_profile_nodes {
     my ($self, $dbi_profile_name, $sub) = @_;
     my @dbi_profiles = $self->get_dbi_profile($dbi_profile_name);
-    $self->_visit_nodes($_->{Data}, undef, $sub)
-        for (@dbi_profiles);
+    for my $dbi_profile (@dbi_profiles) {
+        my $data = $dbi_profile->{Data}
+            or next;
+        $self->_visit_nodes($data, undef, $sub)
+    }
     return;
 }
 
@@ -435,7 +441,7 @@ reset_profile_data().
 
 If $dbi_profile_name is "*" then counts in all attached profiles are set.
 
-Resets the period count to zero and returns the previous count.
+Resets the period count used.
 
 Does nothing but return 0 if the the period count is zero.
 
@@ -462,10 +468,9 @@ sub propagate_period_count {
     # force count of all nodes to be count of periods instead of samples
     my $count = $self->{period_count}
         or return 0;
-    warn "propagate_period_count $self->{profile_name} count $count" if DEBUG();
+    warn "propagate_period_count $self->{profile_name} count $count\n" if DEBUG();
     # force count of all nodes to be count of periods
     $self->visit_profile_nodes($dbi_profile_name, sub { return unless ref $_[0] eq 'ARRAY'; $_[0]->[0] = $count });
-    $self->{period_count} = 0;
     return $count;
 }
 
@@ -545,7 +550,19 @@ sub has_profile_data {
 
 Marks the start of a series of related samples, e.g, within one http request.
 
-Increments the C<period_count> attribute.
+If end_sample_period() has not been called for this core since the last
+start_sample_period() then the value of the C<period_strict_start> attribute
+determines the actions taken:
+
+  0 = restart the period, silently
+  1 = restart the period and issue a warning (this is the default)
+  2 = continue the current period, silently
+  3 = continue the current period and issue a warning
+  4 = call end_sample_period(), silently
+  5 = call end_sample_period() and issue a warning
+
+If the value is a CODE ref then it's called (and passed $core) and the return value used.
+
 Resets the C<period_accumulated> attribute to zero.
 Sets C<period_start_time> to the current dbi_time().
 If C<period_summary> is enabled then the period_summary DBI Profile is enabled and reset.
@@ -559,15 +576,21 @@ sub start_sample_period {
     # marks the start of a series of related samples, e.g, within one http request
     # see end_sample_period()
     if ($self->{period_start_time}) {
-        carp "start_sample_period() called for $self->{profile_name} without preceeding end_sample_period()";
-        $self->end_sample_period();
+        if (my $strictness = $self->{period_strict_start}) {
+            $strictness = $strictness->($self) if ref $strictness eq 'CODE';
+            carp "start_sample_period() called for $self->{profile_name} without preceeding end_sample_period()"
+                if $strictness & 0x01;
+            return
+                if $strictness & 0x02;
+            $self->end_sample_period()
+                if $strictness & 0x04;
+        }
     }
     if (my $period_summary_h = $self->{dbi_handles_all}{period_summary}) {
         # ensure period_summary_h dbi profile will receive samples
         $self->{dbi_handles_active}{period_summary} = $period_summary_h;
         $period_summary_h->{Profile}->empty; # start period empty
     }
-    $self->{period_count}++;
     $self->{period_accumulated} = 0;
     $self->{period_start_time}  = dbi_time();
     return;
@@ -580,8 +603,19 @@ sub start_sample_period {
 
 Marks the end of a series of related samples, e.g, within one http request.
 
-If start_sample_period() was not called for this core then end_sample_period()
-just returns undef.
+If start_sample_period() has not been called for this core since the last
+end_sample_period() (or the start of the script) then the value of the
+C<period_strict_end> attribute determines the actions taken:
+
+  0 = do nothing, silently (this is the default)
+  1 = do nothing but warn
+  2 = call start_sample_period(), silently
+  3 = call start_sample_period() and warn
+
+If the value is a CODE ref then it's called (and passed $core) and the return value used.
+If start_sample_period() isn't called then end_sample_period() just returns.
+
+The C<period_count> attribute is incremented.
 
 If C<period_exclusive> is enabled then a sample is added with a duration
 caclulated to be the time since start_sample_period() was called to now, minus
@@ -597,10 +631,21 @@ See also L</start_sample_period>, C<period_summary> and L</propagate_period_coun
 
 sub end_sample_period {
     my $self = shift;
+
     if (not $self->{period_start_time}) {
-        carp "end_sample_period() ignored for $self->{profile_name} without preceeding start_sample_period()" if DEBUG();
-        return undef;
+        if (my $strictness = $self->{period_strict_end}) {
+            $strictness = $strictness->($self) if ref $strictness eq 'CODE';
+            carp "end_sample_period() called for $self->{profile_name} without preceeding start_sample_period()"
+                if $strictness & 0x01;
+            $self->start_sample_period()
+                if $strictness & 0x02;
+        }
+        # return if we didn't start a period
+        return if not $self->{period_start_time};
     }
+
+    $self->{period_count}++;
+
     if (my $profiler = $self->{exclusive_sampler} and
         my $dbi_profile = $self->get_dbi_profile
     ) {
@@ -610,7 +655,7 @@ sub end_sample_period {
         # end_sample_period that hasn't been accounted for by normal samples.
         dbi_profile_merge(my $total=[], $dbi_profile->{Data});
         my $overhead = $sample_overhead_time * $total->[0];
-        warn "$self->{name} period end: overhead ${overhead}s ($total->[0] * $sample_overhead_time)"
+        warn "$self->{name} period end: overhead ${overhead}s ($total->[0] * $sample_overhead_time)\n"
             if DEBUG() && DEBUG() >= 3;
         $profiler->(undef, $self->{period_start_time} + $self->{period_accumulated} + $overhead)
             if $overhead; # don't add 'other' if there have been no actual samples
