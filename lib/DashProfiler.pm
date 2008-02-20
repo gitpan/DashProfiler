@@ -3,11 +3,11 @@ package DashProfiler;
 use strict;
 use warnings;
 
-our $VERSION = "1.08"; # $Revision: 33 $
+our $VERSION = "1.09"; # $Revision: 43 $
 
 =head1 NAME
 
-DashProfiler - collect call count and timing data aggregated by context
+DashProfiler - efficiently collect call count and timing data aggregated by context
 
 =head1 SYNOPSIS
 
@@ -20,35 +20,22 @@ See L<DashProfiler::UserGuide> for a general introduction.
 
 =head1 DESCRIPTION
 
-Via DashProfiler::Import cost per call = 50,000/second, 0.000020s on modern box
-(not accurate to realworld situations because of L2 caching, but the general
-message that "it's fast" is)
+=head2 Performance
 
-=head1 USE IN APACHE
+DashProfiler is fast, very fast. Especially given the functionality and flexibility it offers.
 
-XXX needs more docs
+When you build DashProfiler, the test suite shows the performance on your
+system when you run "make test". On my system, for example it reports:
 
-=head2 Example Apache mod_perl Configuration
+    t/02.sample....... you're using perl 5.008006 on darwin-thread-multi-2level
+      Average 'hot' sample overhead is  0.000029s (max 0.000240s, min 0.000028s)
+      Average 'cold' sample overhead is 0.000034s (max 0.000094s, min 0.000030s)
 
-    <Perl>
-    BEGIN {
-        # create profile early so other code can use DashProfiler::Import
-        use DashProfiler;
-        # files will be written to $spool_directory/dashprofiler.subsys.ppid.pid
-        DashProfiler->add_profile('subsys', {
-            granularity => 30,
-            flush_interval => 60,
-            add_exclusive_sample => 'other',
-            spool_directory => '/tmp', # needs write permission for apache user
-        });
-    }
-    </Perl>
+=head2 Apache mod_perl
 
-    # hook DashProfiler into appropriate mod_perl handlers
-    PerlChildInitHandler DashProfiler::reset_all_profiles
-    PerlPostReadRequestHandler DashProfiler::start_sample_period_all_profiles
-    PerlCleanupHandler DashProfiler::end_sample_period_all_profiles
-    PerlChildExitHandler DashProfiler::flush_all_profiles
+DashProfiler was designed to work well with Apache mod_perl in high volume production environments.
+
+Refer to L<DashProfiler::Apache> for details.
 
 =cut
 
@@ -57,15 +44,10 @@ use Data::Dumper;
 
 use DashProfiler::Core;
 
-
-# PerlChildInitHandler - clear data in all profiles
-# PerlChildExitHandler - save_to_disk all profiles
-# PerlPostReadRequestHandler - store hi-res timestamp in a pnote
-# PerlLogHandler - add sample for 'other' as time since start of request - duration_accumulated
-#   save_to_disk() if not saved within last N seconds
-
 my %profiles;
+my %precondition;
 
+=head1 PRIMARY METHODS
 
 =head2 add_profile
 
@@ -88,11 +70,13 @@ sub add_profile {
     return $self;
 }
 
+
 =head2 prepare
 
     $sampler = DashProfiler->prepare($profile_name, ...);
 
 Calls prepare(...) on the DashProfiler named by $profile_name.
+Returns a sampler code reference prepared to take samples.
 
 If no profile with that name exists then it will warn, but only once per name.
 
@@ -110,6 +94,22 @@ sub prepare {
     };
     return $profile_ref->prepare(@_);
 }
+
+
+=head2 profile_names
+
+  @profile_names = DashProfiler->profile_names;
+
+Returns a list of all the profile names added via L</add_profile>.
+
+=cut
+
+sub profile_names {
+    my $class = shift;
+    # return keys but skip 0 entries that might be added by prepare()
+    return grep { $profiles{$_} } keys %profiles;
+}
+
 
 =head2 get_profile
 
@@ -142,7 +142,7 @@ sub profile_as_text {
 }
 
 
-# --- static methods on all profiles ---
+=head1 METHODS AFFECTING ALL PROFILES
 
 =head2 all_profiles_as_text
 
@@ -153,6 +153,7 @@ Calls profile_as_text() on all profiles, ordered by name.
 =cut
 
 sub all_profiles_as_text {
+    my $class = shift;
     return map { $profiles{$_}->profile_as_text() } sort keys %profiles;
 }
 
@@ -168,7 +169,9 @@ Equivalent to
 =cut
 
 sub dump_all_profiles {
-    warn $_ for all_profiles_as_text();
+    my $class = shift;
+    warn $_ for $class->all_profiles_as_text();
+    return 1;
 }
 
 
@@ -181,8 +184,14 @@ Typically called from mod_perl PerlChildInitHandler.
 =cut
 
 sub reset_all_profiles {    # eg PerlChildInitHandler
+    my $class = shift;
+    if (my $pre = $precondition{reset_all_profiles}) {
+	return 1 unless $pre->();
+    }
     $_->reset_profile_data for values %profiles;
+    return 1;
 }
+$precondition{reset_all_profiles} = undef;
 
 
 =head2 flush_all_profiles
@@ -195,8 +204,14 @@ Typically called from mod_perl PerlChildExitHandler
 =cut
 
 sub flush_all_profiles {    # eg PerlChildExitHandler
+    my $class = shift;
+    if (my $pre = $precondition{flush_all_profiles}) {
+	return 1 unless $pre->();
+    }
     $_->flush for values %profiles;
+    return 1;
 }
+$precondition{flush_all_profiles} = undef;
 
 
 =head2 start_sample_period_all_profiles
@@ -209,8 +224,14 @@ Typically called from mod_perl PerlPostReadRequestHandler
 =cut
 
 sub start_sample_period_all_profiles { # eg PerlPostReadRequestHandler
+    my $class = shift;
+    if (my $pre = $precondition{start_sample_period_all_profiles}) {
+	return unless $pre->();
+    }
     $_->start_sample_period for values %profiles;
+    return 1;
 }
+$precondition{start_sample_period_all_profiles} = undef;
 
 
 =head2 end_sample_period_all_profiles
@@ -224,9 +245,67 @@ Typically called from mod_perl PerlCleanupHandler
 =cut
 
 sub end_sample_period_all_profiles { # eg PerlCleanupHandler
+    my $class = shift;
+    if (my $pre = $precondition{end_sample_period_all_profiles}) {
+	return unless $pre->();
+    }
     $_->end_sample_period for values %profiles;
     $_->flush_if_due      for values %profiles;
+    return 1;
+}
+$precondition{end_sample_period_all_profiles} = undef;
+
+=head1 OTHER METHODS
+
+=head2 set_precondition
+
+  DashProfiler->set_precondition( function => sub { ... } );
+
+Available functions are:
+
+    reset_all_profiles
+    flush_all_profiles
+    start_sample_period_all_profiles
+    end_sample_period_all_profiles
+
+The set_precondition method associates a code reference with a function.
+When the function is called the corresponding precondition code is executed
+first.  If the precondition code does not return true then the function returns
+immediately.
+
+This mechanism is most useful for fine-tuning when periods start and end.
+For example, there may be times when start_sample_period_all_profiles() is
+being called when you might not want to actually start a new period.
+
+Alternatively the precondition code could itself call start_sample_period()
+for one or more specific profiles and then return false.
+
+See L<DashProfiler::Apache> for an example use.
+
+=cut
+
+sub set_precondition {
+    my ($class, $name, $code) = @_;
+    croak "Not a CODE reference" if $code and ref $code ne 'CODE';
+    croak "Invalid function name '$name'" unless exists $precondition{$name};
+    $precondition{$name} = $code;
+    return;
 }
 
+
+=head1 AUTHOR
+
+DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
+L<http://blog.timbunce.org>
+
+=head1 COPYRIGHT
+
+The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
+All rights reserved.
+
+You may distribute under the terms of either the GNU General Public
+License or the Artistic License, as specified in the Perl README file.
+
+=cut
 
 1;

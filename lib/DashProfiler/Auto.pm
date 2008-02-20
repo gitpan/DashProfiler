@@ -6,7 +6,7 @@ use Carp;
 
 use base qw(DashProfiler::Import);
 
-our $VERSION = sprintf("1.%06d", q$Revision: 26 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 41 $ =~ /(\d+)/o);
 
 
 =head1 NAME
@@ -139,3 +139,19 @@ sub import {
 
 
 1;
+
+=head1 AUTHOR
+
+DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
+L<http://blog.timbunce.org>
+
+=head1 COPYRIGHT
+        
+The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
+All rights reserved.
+
+You may distribute under the terms of either the GNU General Public
+License or the Artistic License, as specified in the Perl README file.
+
+=cut
+

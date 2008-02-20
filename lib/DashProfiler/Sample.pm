@@ -19,7 +19,7 @@ The object, and this class, are rarely used directly.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 28 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 41 $ =~ /(\d+)/o);
 
 use DBI::Profile qw(dbi_profile dbi_time);
 use Carp;
@@ -70,7 +70,7 @@ sub new {
             undef $profile_ref->{exclusive_sampler};
         }
         else {
-            Carp::cluck("$class $profile_ref->{profile_name} already active in outer scope")
+            Carp::cluck("$class $profile_ref->{profile_name} already active")
                 unless $profile_ref->{in_use_warning_given}++; # warn once
             return; # don't double count
         }
@@ -83,6 +83,20 @@ sub new {
         $context2   || $meta->{_context2},
         $start_time || dbi_time(), # do this as late as practical
     ] => $class;
+}
+
+
+=head2 current_sample_duration
+
+  $ps = foo_profiler(...);
+  my $duration = $ps->current_sample_duration();
+
+Returns the amount of time since the sample was created.
+
+=cut
+
+sub current_sample_duration {
+    return dbi_time() - shift->[2];
 }
 
 
@@ -115,7 +129,9 @@ sub DESTROY {
 
     # Any fatal errors won't be reported because we're in a DESTROY.
     # This can make debugging hard. If you suspect a problem then uncomment this:
-    local $SIG{__DIE__} = sub { warn @_ } if DEBUG(); ## no critic
+    #local $SIG{__DIE__} = sub { warn @_ } if DEBUG(); ## no critic
+    # Note that throwing an exception can be used by the context2edit hook
+    # to 'veto' the sample.
 
     my ($meta, $context2, $start_time) = @{+shift};
 
@@ -123,8 +139,8 @@ sub DESTROY {
     undef $profile_ref->{in_use};
     $profile_ref->{period_accumulated} += $end_time - $start_time;
 
-    $context2 = $context2->($meta) if ref $context2 eq 'CODE';
-
+    $context2 = $context2->($meta)
+        if ref $context2 eq 'CODE';
     $context2 = $meta->{context2edit}->($context2, $meta)
         if ref $meta->{context2edit} eq 'CODE';
 
@@ -143,6 +159,8 @@ sub DESTROY {
 }
 
 
+1;
+
 =head2 DEBUG
 
 The DEBUG subroutine is a constant that returns whatever the value of
@@ -151,6 +169,18 @@ The DEBUG subroutine is a constant that returns whatever the value of
 
 was when the modle was loaded.
 
+=head1 AUTHOR
+
+DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
+L<http://blog.timbunce.org>
+
+=head1 COPYRIGHT
+        
+The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
+All rights reserved.
+
+You may distribute under the terms of either the GNU General Public
+License or the Artistic License, as specified in the Perl README file.
+
 =cut
 
-1;

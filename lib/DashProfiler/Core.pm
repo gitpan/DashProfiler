@@ -22,7 +22,7 @@ multiple profiles.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 36 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 43 $ =~ /(\d+)/o);
 
 use DBI 1.57 qw(dbi_time dbi_profile_merge);
 use DBI::Profile;
@@ -64,26 +64,13 @@ my $HAS_WEAKEN = eval {
     unless $HAS_WEAKEN;
 
 
-my $sample_overhead_time = 0.000020; # on my 2GHz laptop (must not be zero)
-if (0) {    # calculate approximate (minimum) sample overhead time
-    my $profile = __PACKAGE__->new('overhead',{ dbi_profile_class => 'DashProfiler::DumpNowhere' });
-    my $sampler = $profile->prepare('c1');
-    my $count = 100;
-    my ($i, $sum) = ($count, 0);
-    while ($i--) {
-        my $t1 = dbi_time();
-        my $ps1 = $sampler->("c2");
-        undef $ps1;
-        $sum += dbi_time() - $t1;
-    }
-    # overhead is average of time spent calling sampler & DESTROY:
-    $sample_overhead_time = $sum / $count; # ~0.000017 on 2GHz MacBook Pro
-    # ... minus the time accumulated by the samples:
-    $sample_overhead_time -= ($profile->get_dbi_profile->{Data}{c1}{c2}[1] / $count);
-    warn sprintf "sample_overhead_time=%.6fs\n", $sample_overhead_time if DEBUG();
-    $profile->reset_profile_data;
-}
+# On 2GHz OS X 10.5.2 laptop:
+#   sample_overhead_time = 0.000014s
+#   sample_inner_time    = 0.000003s
+my ($sample_overhead_time, $sample_inner_time) = estimate_sample_overheads();
 
+
+=head1 CLASS METHODS
 
 =head2 new
 
@@ -96,37 +83,39 @@ if (0) {    # calculate approximate (minimum) sample overhead time
       flush_interval => 300,
   } );
 
-Creates DashProfiler::Core objects. These should normally created very early in
-the life of the program, especially when using DashProfiler::Import.
+Creates and returns a DashProfiler::Core object.
 
-=head3 Options
+=head2 Options for new()
 
-=over 4
+=head3 disabled
 
-=item disabled
+Set to a true value to prevent samples being added to this core. If true, the
+prepare() method and the L<DashProfiler::Sample> new() method will return undef.
 
-Set to a true value to prevent samples being added to this core.
-Especially relevant for DashProfiler::Import where disabling
-.
 Default false.
 
-=item dbi_profile_class
+Currently, any existing samples that were active will still be added when they
+terminate. This behaviour may change.
+
+See also L<DashProfiler::Import>.
+
+=head3 dbi_profile_class
 
 Specifies the class to use for creating DBI::Profile objects.
 The default is C<DBI::Profile>. Alternatives include C<DBI::ProfileDumper>
 and C<DBI::ProfileDumper::Apache>.
 
-=item dbi_profile_args
+=head3 dbi_profile_args
 
 Specifies extra arguments to pass the new() method of the C<dbi_profile_class>
 (e.g., C<DBI::Profile>). The default is C<{ }>.
 
-=item flush_interval
+=head3 flush_interval
 
 How frequently the DBI:Profiles associated with this core should be written out
 and the data reset. Default is 0 - no regular flushing.
 
-=item flush_hook
+=head3 flush_hook
 
 If set, this code reference is called when flush() is called and can influence
 its behaviour. For example, this is the flush_hook used by L<DashProfiler::Auto>:
@@ -139,19 +128,19 @@ its behaviour. For example, this is the flush_hook used by L<DashProfiler::Auto>
 
 See L</flush> for more details.
 
-=item granularity
+=head3 granularity
 
 The default C<Path> for the DBI::Profile objects doesn't include time.
 The granularity option adds 'C<!Time~$granularity>' to the front of the Path.
 So as time passes the samples are aggregated into new sub-trees.
 
-=item sample_class
+=head3 sample_class
 
 The sample_class option specifies which class should be used to take profile samples.
 The default is C<DashProfiler::Sample>.
 See the L</prepare> method for more information.
 
-=item period_exclusive
+=head3 period_exclusive
 
 When using periods, via the start_sample_period() and end_sample_period() methods,
 DashProfiler can add an additional sample representing the time between the
@@ -160,7 +149,7 @@ start_sample_period() and end_sample_period() method calls that wasn't accounted
 The period_exclusive option enables this extra sample. The value of the option
 is used as the value for key1 and key2 in the Path.
 
-=item period_summary
+=head3 period_summary
 
 Specifies the name of the extra DBI Profile object to attach to the core.
 This extra 'period summary' profile is enabled and reset by the start_sample_period()
@@ -170,12 +159,21 @@ The mechanism enables a single profile to be used to capture both long-running
 sampling (for example in a web application, often with C<granularity> set)
 and single-period.
 
-=item profile_as_text_args
+=head3 period_strict_start
+
+See L</start_sample_period>.
+
+=head3 period_strict_end
+
+See L</end_sample_period>.
+
+=head3 profile_as_text_args
 
 A reference to a hash containing default formatting arguments for the profile_as_text() method.
 
-=back
+=head3 extra_info
 
+Can be used to attach any extra information to the profiler core object. That can be useful sometimes in callbacks.
 
 =cut
 
@@ -242,6 +240,91 @@ sub new {
     return $self;
 }
 
+
+=head2 estimate_sample_overheads
+
+  $sample_overhead_time = DashProfiler::Core->estimate_sample_overheads();
+
+  ($sample_overhead_time, $sample_inner_time)
+      = DashProfiler::Core->estimate_sample_overheads();
+
+Estimates and returns the approximate minimum time overhead for taking a sample.
+Two times are returned. The following timeline diagram explains the difference:
+
+    previous statement      -------------                              
+                                      |                                
+    sampler called                    |                                
+      sampler does work               |                                
+      sampler reads time    -----     |                           
+      sampler does work       |       |                           
+      return sample object    |       |                           
+                              |       |                           
+    (measured statements)     |       |                           
+                              |       |                           
+    sample DESTROY'd          |       |                           
+      sample does work        v       |                           
+      sample reads time     -----     |     = sample_inner_time  
+      sample does work                |                                
+                                      v                                
+    next statement          -------------   = sample_overhead_time       
+
+For estimate_sample_overheads() there are no I<measured statements> so the
+times reflect the pure overheads.
+
+Note that because estimate_sample_overheads() uses a tight loop, the timings
+returned are likely to be I<slightly> smaller then the timings you'd get in
+practice due to CPU L2 caches and other factors. This is okay.
+On my 2GHz laptop running OS X 10.5.2 $sample_overhead_time is 0.000014 and
+$sample_inner_time is 0.000003. (When doing occasional sampling the
+sample_overhead_time is 0.000002 to 0.000003 higher, in case you care.)
+
+DashProfiler automatically calls estimate_sample_overheads() when loading and
+records the returned values.  It then uses the C<sample_overhead_time> to
+adjust the L</period_exclusive> time to more accrately reflect the time not
+covered by the accumulated samples.  Currently the C<sample_inner_time> is
+I<not> subtracted from the individual samples. That may change in future.
+
+=cut
+
+sub estimate_sample_overheads {
+    my ($self, $count) = @_;
+    $count ||= 1000;
+
+    my $profile = __PACKAGE__->new('overhead',{ dbi_profile_class => 'DashProfiler::DumpNowhere' });
+    my $sampler = $profile->prepare('c1');
+    # It's okay that this is a tight loop so will tend to give lower times
+    # than would be experienced in practice because, while we want to get as
+    # close as possible to the true overhead, we don't want to overestimate it.
+    my ($i, $sum) = ($count, 0);
+    while ($i--) {
+        my $t0 = dbi_time();         # to compare with t1 below
+        my $t1 = dbi_time();         # time before sampling
+        my $ps1 = $sampler->("c2");  # begin sample
+        undef $ps1;                  # end sample
+        $sum += (dbi_time() - $t1)   # time to perform full sample lifecycle
+              - ($t1 - $t0);         # subtract cost of calling dbi_time()
+    }
+    # overhead is average of time spent calling sampler & DESTROY:
+    $sample_overhead_time = $sum / $count; # ~0.000014s on 2GHz OS X 10.5.2 laptop
+    $sample_inner_time    = ($profile->get_dbi_profile->{Data}{c1}{c2}[1] / $count);
+
+    # we could also subtract the time accumulated by the samples, like this:
+    #   $sample_overhead_time -= $sample_inner_time
+    # but we don't because that's also a valid part of the overhead
+    # because there are no statements between the sample creation and destruction.
+
+    warn sprintf "sample_overhead_time=%.7fs (sample_inner_time=%.7fs)\n",
+        $sample_overhead_time, $sample_inner_time if DEBUG();
+
+    $profile->reset_profile_data;
+
+    return  $sample_overhead_time unless wantarray;
+    return ($sample_overhead_time, $sample_inner_time);
+}
+
+
+
+=head1 OBJECT METHODS
 
 =head2 attach_dbi_profile
 
@@ -379,7 +462,7 @@ sub profile_as_text {
 
 Resets (discards) DBI Profile data and resets the period count to 0.
 If $dbi_profile_name is false then it defaults to "main".
-If $dbi_profile_name is false "*" then all attached profiles are reset.
+If $dbi_profile_name is "*" then all attached profiles are reset.
 Returns a list of the affected DBI::Profile objects.
 
 =cut
@@ -396,7 +479,7 @@ sub reset_profile_data {
 sub _visit_nodes {  # depth first with lexical ordering
     my ($self, $node, $path, $sub) = @_;
     croak "No sub ref given" unless ref $sub eq 'CODE';
-    croak "No node ref given" unless ref $node;
+    return unless $node;
     $path ||= [];
     if (ref $node eq 'HASH') {    # recurse
         $path = [ @$path, undef ];
@@ -431,7 +514,7 @@ sub visit_profile_nodes {
 }
 
 
-=head2 propagate_period_count {
+=head2 propagate_period_count
 
   $core->propagate_period_count( $dbi_profile_name )
 
@@ -449,7 +532,7 @@ This method is especially useful where the number of sample I<periods> are much
 more relevant than the number of samples. This is typically the case where
 sample periods correspond to major units of work, such as web requests.
 Using propagate_period_count() lets you calculate averages based on the count
-of periods instead of samples.
+of I<periods> instead of samples.
 
 Imagine, for example, that you're instrumenting a web application and you have
 a function that sends a request to some network service and another reads each
@@ -567,7 +650,7 @@ Resets the C<period_accumulated> attribute to zero.
 Sets C<period_start_time> to the current dbi_time().
 If C<period_summary> is enabled then the period_summary DBI Profile is enabled and reset.
 
-See also L</end_sample_period>, C<period_summary> and L</propagate_period_count>.
+See also L</end_sample_period>, the C<period_summary> option, and L</propagate_period_count>.
 
 =cut
 
@@ -669,6 +752,20 @@ sub end_sample_period {
 }
 
 
+=head2 period_start_time
+
+  $time = $core->period_start_time;
+
+Returns the time the current sample period was started (typically the time
+L</start_sample_period> was called) or 0 if there's no period active.
+
+=cut
+
+sub period_start_time {
+    return shift->{period_start_time};
+}
+
+
 =head2 prepare
 
   $sampler_code_ref = $core->prepare( $context1 )
@@ -707,8 +804,7 @@ sub prepare {
     $meta{_context2}     = $context2;
     # skip method lookup
     my $coderef = $sample_class->can("new") || "new";
-    return sub {
-        # takes closure over $sample_class, %meta and $coderef
+    return sub { # closure over $sample_class, %meta and $coderef
         $sample_class->$coderef(\%meta, @_)
     };
 }
@@ -746,7 +842,7 @@ was when the modle was loaded.
 
 
 # --- DBI::ProfileDumper subclass that doesn't flush_to_disk
-#     Used by period_sample
+#     Used by period_summary
 {
     package DashProfiler::DumpNowhere;
     use strict;
@@ -764,6 +860,8 @@ was when the modle was loaded.
     sub driver{
         return $drh if $drh;
         my ($class, $attr) = @_;
+        $DBD::DashProfiler::db::imp_data_size = 0;
+        $DBD::DashProfiler::dr::imp_data_size = 0;
         return DBI::_new_drh($class."::dr", {
             Name => 'DashProfiler', Version => $DashProfiler::Core::VERSION,
         });
@@ -797,3 +895,19 @@ BEGIN { $INC{"DBD/DashProfiler.pm"} = __FILE__ }
 
 
 1;
+
+=head1 AUTHOR
+
+DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
+L<http://blog.timbunce.org>
+
+=head1 COPYRIGHT
+        
+The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
+All rights reserved.
+
+You may distribute under the terms of either the GNU General Public
+License or the Artistic License, as specified in the Perl README file.
+
+=cut
+
