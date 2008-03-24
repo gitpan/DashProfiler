@@ -22,7 +22,7 @@ multiple profiles.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 43 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 45 $ =~ /(\d+)/o);
 
 use DBI 1.57 qw(dbi_time dbi_profile_merge);
 use DBI::Profile;
@@ -902,7 +902,7 @@ DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
 L<http://blog.timbunce.org>
 
 =head1 COPYRIGHT
-        
+
 The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
 All rights reserved.
 

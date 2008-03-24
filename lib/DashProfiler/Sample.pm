@@ -19,9 +19,11 @@ The object, and this class, are rarely used directly.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 41 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 45 $ =~ /(\d+)/o);
 
+use DBI;
 use DBI::Profile qw(dbi_profile dbi_time);
+use constant DBI_GE_1603 => ($DBI::VERSION >= 2.603);
 use Carp;
 
 BEGIN {
@@ -148,11 +150,16 @@ sub DESTROY {
         $profile_ref->{profile_name}, $meta->{_context1}, $context2, $start_time, $end_time, $end_time-$start_time
     ) if DEBUG() and DEBUG() >= 4;
 
-    # if you get an sv_dump ("SV = RV(0x181aa80) at 0x1889a80 ...") to stderr
-    # it probably means %$dbi_handles_active contains a plain hash ref not a dbh
-    for (values %{$profile_ref->{dbi_handles_active}}) {
-        next unless defined; # skip any dead weakrefs
-        dbi_profile($_, $meta->{_context1}, $context2, $start_time, $end_time);
+    if (DBI_GE_1603()) {    # use more functional dbi_profile() if available
+        dbi_profile($profile_ref->{dbi_handles_active}, $meta->{_context1}, $context2, $start_time, $end_time);
+    }
+    else {
+        # if you get an sv_dump ("SV = RV(0x181aa80) at 0x1889a80 ...") to stderr
+        # it probably means %$dbi_handles_active contains a plain hash ref not a dbh
+        for (values %{$profile_ref->{dbi_handles_active}}) {
+            next unless defined; # skip any dead weakrefs
+            dbi_profile($_, $meta->{_context1}, $context2, $start_time, $end_time);
+        }
     }
 
     return;
@@ -175,7 +182,7 @@ DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
 L<http://blog.timbunce.org>
 
 =head1 COPYRIGHT
-        
+
 The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
 All rights reserved.
 

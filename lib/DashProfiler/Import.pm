@@ -2,7 +2,7 @@ package DashProfiler::Import;
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 41 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 45 $ =~ /(\d+)/o);
 
 use base qw(Exporter);
 
@@ -120,7 +120,7 @@ DashProfiler by Tim Bunce, L<http://www.tim.bunce.name> and
 L<http://blog.timbunce.org>
 
 =head1 COPYRIGHT
-        
+
 The DashProfiler distribution is Copyright (c) 2007-2008 Tim Bunce. Ireland.
 All rights reserved.
 
