@@ -19,7 +19,7 @@ The object, and this class, are rarely used directly.
 
 use strict;
 
-our $VERSION = sprintf("1.%06d", q$Revision: 45 $ =~ /(\d+)/o);
+our $VERSION = sprintf("1.%06d", q$Revision: 48 $ =~ /(\d+)/o);
 
 use DBI;
 use DBI::Profile qw(dbi_profile dbi_time);
@@ -63,16 +63,19 @@ samples do overlap then C<period_exclusive> is disabled for that DashProfiler.
 =cut
 
 sub new {
-    my ($class, $meta, $context2, $start_time, $allow_overlaping_use) = @_;
-    my $profile_ref = $meta->{_dash_profile};
-    return if $profile_ref->{disabled};
+    # ($class, $meta, $context2, $start_time, $allow_overlap)
+    my $profile_ref = $_[1]->{_dash_profile}; # $meta->_dash_profile
     if ($profile_ref->{in_use}++) {
-        if ($allow_overlaping_use) {
+        if ($profile_ref->{disabled}) {
+            $profile_ref->{in_use}--; # undo the increment we did above
+            return;
+        }
+        if ($_[4]) { # allow_overlaping_use
             # can't use exclusive timer with nested samples
             undef $profile_ref->{exclusive_sampler};
         }
         else {
-            Carp::cluck("$class $profile_ref->{profile_name} already active")
+            Carp::cluck("$_[0] $profile_ref->{profile_name} already active")
                 unless $profile_ref->{in_use_warning_given}++; # warn once
             return; # don't double count
         }
@@ -81,10 +84,10 @@ sub new {
     # and remove the ++ from the if() above and tweak the cluck message
     #$profile_ref->{in_use} = Carp::longmess("");
     return bless [
-        $meta,
-        $context2   || $meta->{_context2},
-        $start_time || dbi_time(), # do this as late as practical
-    ] => $class;
+        $_[1],
+        $_[2] || $_[1]->{_context2},
+        $_[3] || dbi_time(), # do this as late as practical
+    ] => $_[0];
 }
 
 
